@@ -1,0 +1,10 @@
+# Streamlit Cloud 배포용 의존성 (factor_trading 앱).
+# 사내 개발 환경은 anaconda 로 별도 관리 — 이 파일은 Cloud 배포 전용.
+
+streamlit>=1.37,<2.0
+pandas>=2.0,<3.0
+numpy>=1.26,<3.0
+scipy>=1.11,<2.0
+statsmodels>=0.14,<0.15     # RollingOLS (2-factor β, CURVE 잔차)
+plotly>=5.22,<6.0
+pyarrow>=15.0               # parquet 읽기
