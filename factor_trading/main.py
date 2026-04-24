@@ -14,7 +14,6 @@ from typing import Optional, Sequence
 
 import pandas as pd
 
-from .data_loader import DataLoader
 from .beta_estimator import estimate_all_betas_2f, sanity_check
 from .residual_builder import residual_panel_2f, accumulate_horizons, HORIZONS
 from .factors import compute_rv, compute_vol, compute_mom, compute_curve
@@ -64,6 +63,9 @@ class FactorPipeline:
         if self.loader is not None:
             self.dl = self.loader
         else:
+            # Lazy import: data_loader.py 는 사내 DB 전용 (Cloud 배포에서 제외됨).
+            # USE_CACHED_DATA=1 로 loader 주입받으면 이 분기 탐 없음.
+            from .data_loader import DataLoader
             self.dl = DataLoader(start=self.start, end=self.end, categories=list(self.categories))
         dy3 = self.dl.dY_3y()
         dy10 = self.dl.dY_10y()
