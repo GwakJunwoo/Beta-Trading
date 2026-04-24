@@ -47,9 +47,15 @@ st.set_page_config(
 import os, hmac
 
 def _check_password() -> bool:
+    # 1차: env var. 2차: st.secrets (Streamlit Cloud UI에서 설정 시).
     required = os.environ.get("STREAMLIT_APP_PASSWORD")
     if not required:
-        return True                              # 패스워드 안 걸렸으면 통과 (로컬)
+        try:
+            required = st.secrets.get("STREAMLIT_APP_PASSWORD")
+        except (FileNotFoundError, KeyError, AttributeError):
+            required = None
+    if not required:
+        return True                              # 비번 미설정 → 로컬 전용
     if st.session_state.get("authed", False):
         return True
     st.title("🔐 채권 3팩터 시스템 — 인증")
@@ -71,15 +77,33 @@ if not _check_password():
 
 @st.cache_resource(show_spinner="FactorPipeline 실행 (처음만 ~30초) …")
 def load_monitor(start: str, categories_key: str):
-    """USE_CACHED_DATA=1 이면 CachedDataLoader (parquet). 아니면 DataLoader (DB)."""
+    """Loader 자동 선택.
+
+    우선순위:
+      1. 환경변수 USE_CACHED_DATA="0" → 강제 DB (로컬 개발만)
+      2. data_cache/meta.json 존재 → CachedDataLoader (Cloud + 로컬 기본)
+      3. 그 외 → DB 기반 DataLoader (사내망 전용)
+    """
+    import os as _os
+    from pathlib import Path as _Path
+
     categories = categories_key.split(",")
+
+    force_db = _os.environ.get("USE_CACHED_DATA") == "0"
+    cache_dir_env = _os.environ.get("FT_CACHE_DIR", "data_cache")
+    cache_dir = _Path(cache_dir_env)
+    if not cache_dir.is_absolute():
+        # app.py 부모 폴더 기준 상대 경로 해석
+        cache_dir = _Path(__file__).resolve().parent.parent / cache_dir_env
+
     loader = None
-    if os.environ.get("USE_CACHED_DATA") == "1":
+    if not force_db and cache_dir.exists() and (cache_dir / "meta.json").exists():
         from factor_trading.data_loader_cached import CachedDataLoader
         loader = CachedDataLoader(
-            cache_dir=os.environ.get("FT_CACHE_DIR", "data_cache"),
+            cache_dir=str(cache_dir),
             start=start, end=None, categories=categories,
         )
+
     m = DailyMonitor(start=start, end=None, categories=categories,
                       loader=loader).run(verbose=False)
     return m
