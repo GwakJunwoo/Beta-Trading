@@ -158,7 +158,7 @@ st.caption(f"as_of {m.as_of.date()} · 3팩터: RV / MOM / CURVE · 참조 명�
 # ============================================================
 # Tabs
 # ============================================================
-tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs([
+tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8 = st.tabs([
     "🎯 오늘 스냅샷",
     "🔍 팩터별 상세",
     "🧮 3팩터 분해표",
@@ -166,6 +166,7 @@ tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs([
     "✅ 모델 검증",
     "🔀 동적 비중",
     "🛰️ MOM_contra Satellite",
+    "📐 종목별 베타 시계열",
 ])
 
 # ============================================================
@@ -1012,6 +1013,209 @@ MOM 심층 진단에서 우리가 발견한 것:
         st.error(f"🔴 **satellite 활성 — SHORT bond** "
                   f"(z={now_z:+.2f}, cum_dY_63d={now_cum:+.1f}bp). "
                   f"Rate 급등 후 반전 기대.")
+
+
+# ============================================================
+# TAB 8 — 종목별 다중회귀 베타 시계열 (γ_level / γ_slope / ε)
+# ============================================================
+with tab8:
+    st.subheader("📐 종목별 다중회귀 분해 시계열")
+
+    with st.expander("📖 회귀 수식 재구성 — γ_level · γ_slope · ε", expanded=True):
+        st.markdown("""
+원래 회귀:
+```
+dY_i,t = β_3Y,i · dY_3Y,t  +  β_10Y,i · dY_10Y,t  +  ε_i,t
+```
+
+수학적으로 동등한 재구성:
+```
+dY_i,t = (β_3Y,i + β_10Y,i) · dY_3Y,t
+       + β_10Y,i · (dY_10Y,t − dY_3Y,t)
+       + ε_i,t
+
+       = γ_level,i · dY_3Y,t  +  γ_slope,i · slope_t  +  ε_i,t
+```
+
+- **γ_level = β_3Y + β_10Y** : 시장 전체 금리(3Y 기준)에 대한 종목 노출
+  - 단기물·중기물·장기물 모두 ≈ 1 부근 (시장 1bp 움직이면 ~1bp 따라감)
+- **γ_slope = β_10Y** : 커브 변화 (10Y−3Y) 에 대한 노출
+  - 단기물 ≈ 0, 중기물 ≈ 0.5, 장기물 ≈ 1
+- **ε** : 시장 공통 변수로 설명 안 되는 종목 고유 noise (RV 신호 재료)
+
+세 시계열을 같이 보면 종목이 **시장 move / 커브 변화 / 고유 dislocation** 어느 layer에서 어떻게 움직이는지 한눈에 분해된다.
+""")
+
+    # ---------------- γ panel 계산 ----------------
+    gamma_level = (beta3 + beta10).rename_axis(columns="bond_code")
+    gamma_slope = beta10.rename_axis(columns="bond_code")
+    eps_panel = pipe.residual
+
+    # ---------------- 종목 선택 ----------------
+    universe = sorted(gamma_level.columns.tolist())
+    # 메타로 라벨 만들기 (종목명 + 잔존)
+    rem_avg = rem.mean(axis=0)
+    name_map = {}
+    for code in universe:
+        nm = meta.loc[code, "bond_name"] if code in meta.index else code
+        ry = rem_avg.get(code, np.nan)
+        nm_short = (nm[:22] if isinstance(nm, str) else code) + f"  ({ry:.1f}y)"
+        name_map[code] = nm_short
+
+    # 만기순 정렬
+    universe_sorted = sorted(universe, key=lambda c: rem_avg.get(c, 0))
+    options = [f"{name_map[c]}  [{c}]" for c in universe_sorted]
+    code_lookup = {f"{name_map[c]}  [{c}]": c for c in universe_sorted}
+
+    col_a, col_b = st.columns([2, 1])
+    with col_a:
+        # 기본값: 단기 1, 중기 1, 장기 1
+        default_codes = []
+        for r_lo, r_hi in [(1, 4), (4, 8), (10, 30)]:
+            cands = [c for c in universe_sorted
+                     if r_lo <= rem_avg.get(c, -1) < r_hi]
+            if cands:
+                default_codes.append(cands[len(cands) // 2])
+        default_opts = [opt for opt in options if code_lookup[opt] in default_codes]
+        sel_opts = st.multiselect("종목 선택 (multi)", options=options,
+                                   default=default_opts[:3])
+    with col_b:
+        show_bucket_avg = st.checkbox("만기 버킷 평균 함께 표시", value=True,
+                                       help="≤5y / 5~10y / >10y 그룹 평균 시계열")
+        ts_since = st.text_input("시계열 시작일 (YYYY-MM-DD)", value="2023-01-01")
+
+    sel_codes = [code_lookup[o] for o in sel_opts]
+
+    # ---------------- 데이터 slicing ----------------
+    try:
+        ts_start = pd.Timestamp(ts_since)
+    except Exception:
+        ts_start = pd.Timestamp("2023-01-01")
+
+    gl = gamma_level.loc[gamma_level.index >= ts_start]
+    gs = gamma_slope.loc[gamma_slope.index >= ts_start]
+    eps_sel = eps_panel.loc[eps_panel.index >= ts_start]
+
+    # 만기 버킷 평균 (선택 옵션)
+    bucket_groups = {"≤5y":   [c for c in universe if rem_avg.get(c, -1) <= 5 and rem_avg.get(c, -1) > 0],
+                     "5~10y": [c for c in universe if 5 < rem_avg.get(c, -1) <= 10],
+                     ">10y":  [c for c in universe if rem_avg.get(c, -1) > 10]}
+
+    # ---------------- 시각화 ----------------
+    if not sel_codes:
+        st.info("좌측에서 종목을 하나 이상 선택해 주세요.")
+    else:
+        from plotly.subplots import make_subplots
+        fig = make_subplots(rows=3, cols=1, shared_xaxes=True,
+                            vertical_spacing=0.06,
+                            subplot_titles=(
+                                "γ_level (= β_3Y + β_10Y) — 시장 전체 금리에 대한 종목 노출",
+                                "γ_slope (= β_10Y) — 커브 (10Y−3Y) 변화에 대한 노출",
+                                "ε — 종목 고유 noise (일별 잔차, bp)",
+                            ))
+
+        # 종목별 선
+        cmap = ["#1f77b4", "#d62728", "#2ca02c", "#9467bd", "#ff7f0e",
+                "#17becf", "#e377c2", "#bcbd22", "#7f7f7f"]
+        for i, code in enumerate(sel_codes):
+            color = cmap[i % len(cmap)]
+            label = name_map.get(code, code)
+            if code in gl.columns:
+                fig.add_trace(go.Scatter(
+                    x=gl.index, y=gl[code], name=label,
+                    line=dict(color=color, width=1.6),
+                    legendgroup=code,
+                ), row=1, col=1)
+                fig.add_trace(go.Scatter(
+                    x=gs.index, y=gs[code], name=label,
+                    line=dict(color=color, width=1.6),
+                    legendgroup=code, showlegend=False,
+                ), row=2, col=1)
+            if code in eps_sel.columns:
+                fig.add_trace(go.Scatter(
+                    x=eps_sel.index, y=eps_sel[code], name=label,
+                    line=dict(color=color, width=1.0), opacity=0.85,
+                    legendgroup=code, showlegend=False,
+                ), row=3, col=1)
+
+        # 만기 버킷 평균 (옵션)
+        if show_bucket_avg:
+            bucket_color = {"≤5y": "#1f77b4", "5~10y": "#888888", ">10y": "#d62728"}
+            for bk, codes in bucket_groups.items():
+                cols = [c for c in codes if c in gl.columns]
+                if not cols: continue
+                gl_avg = gl[cols].mean(axis=1)
+                gs_avg = gs[cols].mean(axis=1)
+                eps_avg = eps_sel[cols].mean(axis=1) if cols else None
+                color = bucket_color[bk]
+                fig.add_trace(go.Scatter(
+                    x=gl_avg.index, y=gl_avg.values, name=f"avg {bk}",
+                    line=dict(color=color, width=1.2, dash="dash"),
+                    legendgroup=f"bk_{bk}", opacity=0.85,
+                ), row=1, col=1)
+                fig.add_trace(go.Scatter(
+                    x=gs_avg.index, y=gs_avg.values, name=f"avg {bk}",
+                    line=dict(color=color, width=1.2, dash="dash"),
+                    legendgroup=f"bk_{bk}", showlegend=False,
+                ), row=2, col=1)
+                if eps_avg is not None:
+                    fig.add_trace(go.Scatter(
+                        x=eps_avg.index, y=eps_avg.values, name=f"avg {bk}",
+                        line=dict(color=color, width=1.0, dash="dash"),
+                        legendgroup=f"bk_{bk}", showlegend=False,
+                    ), row=3, col=1)
+
+        # 가이드라인
+        fig.add_hline(y=1.0, line_dash="dot", line_color="gray", line_width=0.6, row=1, col=1)
+        fig.add_hline(y=0.0, line_dash="dot", line_color="gray", line_width=0.6, row=2, col=1)
+        fig.add_hline(y=0.0, line_dash="solid", line_color="black", line_width=0.5, row=3, col=1)
+
+        fig.update_yaxes(title_text="γ_level", row=1, col=1)
+        fig.update_yaxes(title_text="γ_slope", row=2, col=1)
+        fig.update_yaxes(title_text="ε (bp)", row=3, col=1)
+        fig.update_layout(height=820, hovermode="x unified",
+                           legend=dict(orientation="v", x=1.02, y=1),
+                           margin=dict(l=60, r=140, t=60, b=40))
+        st.plotly_chart(fig, use_container_width=True)
+
+        # ---------------- 통계 요약 ----------------
+        st.markdown("### 📊 통계 요약 (선택 구간)")
+        rows = []
+        for code in sel_codes:
+            if code not in gl.columns: continue
+            ry = rem_avg.get(code, np.nan)
+            rows.append({
+                "bond": name_map.get(code, code),
+                "remain_y": ry,
+                "γ_level mean": float(gl[code].mean()),
+                "γ_level std":  float(gl[code].std()),
+                "γ_slope mean": float(gs[code].mean()),
+                "γ_slope std":  float(gs[code].std()),
+                "ε std (bp)":   float(eps_sel[code].std()) if code in eps_sel.columns else np.nan,
+                "γ_level (latest)": float(gl[code].iloc[-1]) if not gl[code].dropna().empty else np.nan,
+                "γ_slope (latest)": float(gs[code].iloc[-1]) if not gs[code].dropna().empty else np.nan,
+            })
+        if rows:
+            stats_df = pd.DataFrame(rows)
+            st.dataframe(
+                stats_df.style.format({
+                    "remain_y":          "{:.2f}",
+                    "γ_level mean":      "{:+.3f}",
+                    "γ_level std":       "{:.3f}",
+                    "γ_slope mean":      "{:+.3f}",
+                    "γ_slope std":       "{:.3f}",
+                    "ε std (bp)":        "{:.2f}",
+                    "γ_level (latest)":  "{:+.3f}",
+                    "γ_slope (latest)":  "{:+.3f}",
+                }),
+                use_container_width=True, hide_index=True,
+            )
+
+        st.caption(
+            "💡 **읽는 법**: γ_level 이 ~1 에서 떨어지면 종목이 시장 평균보다 *덜* 따라가는 시기. "
+            "γ_slope 가 0 → 양수 변화는 만기 노출이 길어지는 효과(예: 새 발행 후 OTR 진입). "
+            "ε 가 갑자기 크게 튀면 그날 idiosyncratic dislocation 발생 — RV 신호의 재료."
+        )
 
 
 # ============================================================
