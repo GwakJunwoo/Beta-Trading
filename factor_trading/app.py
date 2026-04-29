@@ -1064,6 +1064,8 @@ dY_i,t = (β_3Y,i + β_10Y,i) · dY_3Y,t
     gamma_level = (beta3 + beta10).rename_axis(columns="bond_code")
     gamma_slope = beta10.rename_axis(columns="bond_code")
     eps_panel = pipe.residual
+    # 21일 누적 ε (= RV score, 1m horizon)
+    cum_eps_panel = eps_panel.rolling(21, min_periods=11).sum().rename_axis(columns="bond_code")
 
     # ---------------- 종목 선택 ----------------
     universe = sorted(gamma_level.columns.tolist())
@@ -1109,6 +1111,7 @@ dY_i,t = (β_3Y,i + β_10Y,i) · dY_3Y,t
     gl = gamma_level.loc[gamma_level.index >= ts_start]
     gs = gamma_slope.loc[gamma_slope.index >= ts_start]
     eps_sel = eps_panel.loc[eps_panel.index >= ts_start]
+    cum_eps_sel = cum_eps_panel.loc[cum_eps_panel.index >= ts_start]
 
     # 만기 버킷 평균 (선택 옵션)
     bucket_groups = {"≤5y":   [c for c in universe if rem_avg.get(c, -1) <= 5 and rem_avg.get(c, -1) > 0],
@@ -1120,12 +1123,13 @@ dY_i,t = (β_3Y,i + β_10Y,i) · dY_3Y,t
         st.info("좌측에서 종목을 하나 이상 선택해 주세요.")
     else:
         from plotly.subplots import make_subplots
-        fig = make_subplots(rows=3, cols=1, shared_xaxes=True,
-                            vertical_spacing=0.06,
+        fig = make_subplots(rows=4, cols=1, shared_xaxes=True,
+                            vertical_spacing=0.05,
                             subplot_titles=(
                                 "γ_level (= β_3Y + β_10Y) — 시장 전체 금리에 대한 종목 노출",
                                 "γ_slope (= β_10Y) — 커브 (10Y−3Y) 변화에 대한 노출",
                                 "ε — 종목 고유 noise (일별 잔차, bp)",
+                                "cum_ε_21d — 21영업일 누적 잔차 (= RV score, bp)",
                             ))
 
         # 종목별 선
@@ -1151,6 +1155,12 @@ dY_i,t = (β_3Y,i + β_10Y,i) · dY_3Y,t
                     line=dict(color=color, width=1.0), opacity=0.85,
                     legendgroup=code, showlegend=False,
                 ), row=3, col=1)
+            if code in cum_eps_sel.columns:
+                fig.add_trace(go.Scatter(
+                    x=cum_eps_sel.index, y=cum_eps_sel[code], name=label,
+                    line=dict(color=color, width=1.6),
+                    legendgroup=code, showlegend=False,
+                ), row=4, col=1)
 
         # 만기 버킷 평균 (옵션)
         if show_bucket_avg:
@@ -1178,19 +1188,43 @@ dY_i,t = (β_3Y,i + β_10Y,i) · dY_3Y,t
                         line=dict(color=color, width=1.0, dash="dash"),
                         legendgroup=f"bk_{bk}", showlegend=False,
                     ), row=3, col=1)
+                # 누적 ε 만기 평균
+                cum_cols = [c for c in codes if c in cum_eps_sel.columns]
+                if cum_cols:
+                    cum_avg = cum_eps_sel[cum_cols].mean(axis=1)
+                    fig.add_trace(go.Scatter(
+                        x=cum_avg.index, y=cum_avg.values, name=f"avg {bk}",
+                        line=dict(color=color, width=1.2, dash="dash"),
+                        legendgroup=f"bk_{bk}", showlegend=False,
+                    ), row=4, col=1)
 
         # 가이드라인
         fig.add_hline(y=1.0, line_dash="dot", line_color="gray", line_width=0.6, row=1, col=1)
         fig.add_hline(y=0.0, line_dash="dot", line_color="gray", line_width=0.6, row=2, col=1)
         fig.add_hline(y=0.0, line_dash="solid", line_color="black", line_width=0.5, row=3, col=1)
+        fig.add_hline(y=0.0, line_dash="solid", line_color="black", line_width=0.5, row=4, col=1)
+        # 누적 ε ±1σ, ±2σ 가이드 (panel pool std 기준 — random walk 가정 대략적 reference)
+        pool_eps_std = float(eps_panel.stack().std())
+        cum_1sigma = pool_eps_std * np.sqrt(21)
+        for k, dash in [(1, "dot"), (2, "dash")]:
+            fig.add_hline(y=+k*cum_1sigma, line_dash=dash, line_color="#888888",
+                          line_width=0.5, row=4, col=1, opacity=0.6)
+            fig.add_hline(y=-k*cum_1sigma, line_dash=dash, line_color="#888888",
+                          line_width=0.5, row=4, col=1, opacity=0.6)
 
         fig.update_yaxes(title_text="γ_level", row=1, col=1)
         fig.update_yaxes(title_text="γ_slope", row=2, col=1)
         fig.update_yaxes(title_text="ε (bp)", row=3, col=1)
-        fig.update_layout(height=820, hovermode="x unified",
+        fig.update_yaxes(title_text="cum_ε_21d (bp)", row=4, col=1)
+        fig.update_layout(height=1020, hovermode="x unified",
                            legend=dict(orientation="v", x=1.02, y=1),
                            margin=dict(l=60, r=140, t=60, b=40))
         st.plotly_chart(fig, use_container_width=True)
+        st.caption(
+            f"📐 누적 ε 가이드라인 (panel pool σ × √21 ≈ ±{cum_1sigma:.2f} bp): "
+            f"점선 = ±1σ, 대시 = ±2σ. 종목 cum_ε 가 ±2σ 넘으면 통계적으로 유의한 dislocation. "
+            f"이 값이 RV signal 의 raw score (음수면 SHORT, 양수면 LONG 후보)."
+        )
 
         # ---------------- 통계 요약 ----------------
         st.markdown("### 📊 통계 요약 (선택 구간)")
@@ -1206,6 +1240,9 @@ dY_i,t = (β_3Y,i + β_10Y,i) · dY_3Y,t
                 "γ_slope mean": float(gs[code].mean()),
                 "γ_slope std":  float(gs[code].std()),
                 "ε std (bp)":   float(eps_sel[code].std()) if code in eps_sel.columns else np.nan,
+                "cum_ε_21d (latest)": (float(cum_eps_sel[code].iloc[-1])
+                                        if code in cum_eps_sel.columns and not cum_eps_sel[code].dropna().empty
+                                        else np.nan),
                 "γ_level (latest)": float(gl[code].iloc[-1]) if not gl[code].dropna().empty else np.nan,
                 "γ_slope (latest)": float(gs[code].iloc[-1]) if not gs[code].dropna().empty else np.nan,
             })
@@ -1213,14 +1250,15 @@ dY_i,t = (β_3Y,i + β_10Y,i) · dY_3Y,t
             stats_df = pd.DataFrame(rows)
             st.dataframe(
                 stats_df.style.format({
-                    "remain_y":          "{:.2f}",
-                    "γ_level mean":      "{:+.3f}",
-                    "γ_level std":       "{:.3f}",
-                    "γ_slope mean":      "{:+.3f}",
-                    "γ_slope std":       "{:.3f}",
-                    "ε std (bp)":        "{:.2f}",
-                    "γ_level (latest)":  "{:+.3f}",
-                    "γ_slope (latest)":  "{:+.3f}",
+                    "remain_y":             "{:.2f}",
+                    "γ_level mean":         "{:+.3f}",
+                    "γ_level std":          "{:.3f}",
+                    "γ_slope mean":         "{:+.3f}",
+                    "γ_slope std":          "{:.3f}",
+                    "ε std (bp)":           "{:.2f}",
+                    "cum_ε_21d (latest)":   "{:+.2f}",
+                    "γ_level (latest)":     "{:+.3f}",
+                    "γ_slope (latest)":     "{:+.3f}",
                 }),
                 use_container_width=True, hide_index=True,
             )
