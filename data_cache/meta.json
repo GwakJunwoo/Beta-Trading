@@ -1,5 +1,5 @@
 {
-  "as_of_date": "2026-04-24",
+  "as_of_date": "2026-04-28",
   "latest_3y_bench": "KR103501GFC3",
   "latest_10y_bench": "KR103502GFC1",
   "start": "2022-01-01",
@@ -7,5 +7,5 @@
     "국고채"
   ],
   "universe_size": 109,
-  "n_trading_days": 1054
+  "n_trading_days": 1056
 }
