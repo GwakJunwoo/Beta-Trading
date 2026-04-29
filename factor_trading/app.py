@@ -158,6 +158,8 @@ st.caption(f"as_of {m.as_of.date()} · 3팩터: RV / MOM / CURVE · 참조 명�
 # ============================================================
 # Tabs
 # ============================================================
+# 8개 탭 모두 정의 (코드 보존). 4번째 ~ 7번째 탭은 CSS 로 시각적으로 숨김.
+# 다시 활성화하려면 아래 st.markdown 의 nth-child 선택자 제거 또는 주석 처리.
 tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8 = st.tabs([
     "🎯 오늘 스냅샷",
     "🔍 팩터별 상세",
@@ -168,6 +170,18 @@ tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8 = st.tabs([
     "🛰️ MOM_contra Satellite",
     "📐 종목별 베타 시계열",
 ])
+
+# === Hide tabs 4~7 (코드는 유지, 화면 표시만 차단) ===
+st.markdown("""
+<style>
+div[data-baseweb="tab-list"] > button:nth-child(4),
+div[data-baseweb="tab-list"] > button:nth-child(5),
+div[data-baseweb="tab-list"] > button:nth-child(6),
+div[data-baseweb="tab-list"] > button:nth-child(7) {
+    display: none !important;
+}
+</style>
+""", unsafe_allow_html=True)
 
 # ============================================================
 # TAB 1 — 오늘 스냅샷
