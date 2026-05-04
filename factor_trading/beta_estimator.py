@@ -34,13 +34,18 @@ def rolling_beta_2f(
         mask = rollover.reindex(df.index, fill_value=False).astype(bool)
         df.loc[mask, :] = np.nan
     valid = df.dropna()
-    if len(valid) < min_periods:
+    # window 보다 sample 적으면 RollingOLS 내부 인덱싱 깨짐 → skip.
+    if len(valid) < window:
         return pd.DataFrame(np.nan, index=dy_inst.index,
                             columns=["beta_3y", "beta_10y", "alpha"])
     X = sm.add_constant(valid[["x3", "x10"]].values)
-    res = RollingOLS(valid["y"].values, X, window=window,
-                     min_nobs=min_periods, expanding=False).fit()
-    params = res.params
+    try:
+        res = RollingOLS(valid["y"].values, X, window=window,
+                         min_nobs=min_periods, expanding=False).fit()
+        params = res.params
+    except (IndexError, ValueError):
+        return pd.DataFrame(np.nan, index=dy_inst.index,
+                            columns=["beta_3y", "beta_10y", "alpha"])
     out = pd.DataFrame(np.nan, index=dy_inst.index,
                        columns=["beta_3y", "beta_10y", "alpha"])
     out.loc[valid.index, "alpha"]    = params[:, 0]
