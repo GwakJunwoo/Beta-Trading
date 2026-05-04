@@ -26,32 +26,35 @@ def rolling_beta_2f(
     window: int = WINDOW,
     min_periods: int = MIN_PERIODS,
 ) -> pd.DataFrame:
-    """단일 종목 2-factor rolling β. Returns DataFrame[beta_3y, beta_10y, alpha]."""
-    df = pd.concat([dy_inst.rename("y"),
-                    dy_3y.reindex(dy_inst.index).rename("x3"),
-                    dy_10y.reindex(dy_inst.index).rename("x10")], axis=1)
-    if rollover is not None:
-        mask = rollover.reindex(df.index, fill_value=False).astype(bool)
-        df.loc[mask, :] = np.nan
-    valid = df.dropna()
-    # window 보다 sample 적으면 RollingOLS 내부 인덱싱 깨짐 → skip.
-    if len(valid) < window:
-        return pd.DataFrame(np.nan, index=dy_inst.index,
+    """단일 종목 2-factor rolling β. Returns DataFrame[beta_3y, beta_10y, alpha].
+
+    sample 부족·numerical 이상 등 어떤 에러든 발생 시 NaN frame 반환 — 한 종목 실패가
+    전체 universe 회귀를 막지 않도록 광범위 except 로 보호.
+    """
+    nan_out = pd.DataFrame(np.nan, index=dy_inst.index,
                             columns=["beta_3y", "beta_10y", "alpha"])
-    X = sm.add_constant(valid[["x3", "x10"]].values)
     try:
+        df = pd.concat([dy_inst.rename("y"),
+                        dy_3y.reindex(dy_inst.index).rename("x3"),
+                        dy_10y.reindex(dy_inst.index).rename("x10")], axis=1)
+        if rollover is not None:
+            mask = rollover.reindex(df.index, fill_value=False).astype(bool)
+            df.loc[mask, :] = np.nan
+        valid = df.dropna()
+        # window 보다 sample 적으면 RollingOLS 내부 인덱싱 깨짐 → skip.
+        if len(valid) < window:
+            return nan_out
+        X = sm.add_constant(valid[["x3", "x10"]].values)
         res = RollingOLS(valid["y"].values, X, window=window,
                          min_nobs=min_periods, expanding=False).fit()
         params = res.params
-    except (IndexError, ValueError):
-        return pd.DataFrame(np.nan, index=dy_inst.index,
-                            columns=["beta_3y", "beta_10y", "alpha"])
-    out = pd.DataFrame(np.nan, index=dy_inst.index,
-                       columns=["beta_3y", "beta_10y", "alpha"])
-    out.loc[valid.index, "alpha"]    = params[:, 0]
-    out.loc[valid.index, "beta_3y"]  = params[:, 1]
-    out.loc[valid.index, "beta_10y"] = params[:, 2]
-    return out
+        out = nan_out.copy()
+        out.loc[valid.index, "alpha"]    = params[:, 0]
+        out.loc[valid.index, "beta_3y"]  = params[:, 1]
+        out.loc[valid.index, "beta_10y"] = params[:, 2]
+        return out
+    except Exception:
+        return nan_out
 
 
 def estimate_all_betas_2f(
@@ -68,10 +71,14 @@ def estimate_all_betas_2f(
     b10 = pd.DataFrame(np.nan, index=idx, columns=dy_panel.columns)
     a0  = pd.DataFrame(np.nan, index=idx, columns=dy_panel.columns)
     for code in dy_panel.columns:
-        out = rolling_beta_2f(dy_panel[code], dy_3y, dy_10y,
-                              rollover=rollover, window=window, min_periods=min_periods)
-        b3[code]  = out["beta_3y"]
-        b10[code] = out["beta_10y"]
+        try:
+            out = rolling_beta_2f(dy_panel[code], dy_3y, dy_10y,
+                                  rollover=rollover, window=window, min_periods=min_periods)
+            b3[code]  = out["beta_3y"]
+            b10[code] = out["beta_10y"]
+        except Exception:
+            # 종목 단위 안전망: 실패 시 NaN 유지
+            pass
         a0[code]  = out["alpha"]
     return {"beta_3y": b3, "beta_10y": b10, "alpha": a0}
 
